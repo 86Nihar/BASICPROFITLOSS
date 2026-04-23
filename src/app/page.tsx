@@ -178,40 +178,57 @@ const AccountantDashboard = () => {
     newItems[index] = { ...newItems[index], [field]: value };
     setFormItems(newItems);
 
-    // IMEI Lookup Logic (Sale only)
-    if (modalType === 'Sale' && field === 'imeiNo' && value && value !== prevValue) {
-       // 1. Advance Detection
-       const matchingAdv = parsedData.activeAdvances.find(adv => 
-          getTxItems(adv).some(it => it.imeiNo === value)
-       );
-       
-       if (matchingAdv) {
-          const advItems = getTxItems(matchingAdv);
-          const advItem = advItems.find(it => it.imeiNo === value);
-          const advPaid = matchingAdv.paymentRecords.reduce((sum, p) => sum + p.amount, 0);
+    // IMEI Lookup Logic
+    if (field === 'imeiNo' && value && value !== prevValue) {
+       if (modalType === 'Sale') {
+           // 1. Advance Detection
+           const matchingAdv = parsedData.activeAdvances.find(adv => 
+              getTxItems(adv).some(it => it.imeiNo === value)
+           );
+           
+           if (matchingAdv) {
+              const advItems = getTxItems(matchingAdv);
+              const advItem = advItems.find(it => it.imeiNo === value);
+              const advPaid = matchingAdv.paymentRecords.reduce((sum, p) => sum + p.amount, 0);
 
-          if (confirm(`Found active Advance for this IMEI!\nCustomer: ${matchingAdv.partyName}\nAdvance Amount: ₹${advPaid}\n\nDo you want to add this amount to current Sale payments?`)) {
-             setFormPayments(prev => [...prev, { mode: 'Cash', amount: advPaid }]);
-             setFormPartyName(matchingAdv.partyName);
-             if (advItem) {
-                const updatedItems = [...newItems];
-                updatedItems[index].productName = advItem.productName;
-                updatedItems[index].purchasePrice = advItem.purchasePrice;
-                setFormItems(updatedItems);
-             }
-             (window as any)._pendingAdvanceId = matchingAdv.id;
-             alert("Advance added to payments. The old advance record will be removed upon saving this sale.");
-             return;
-          }
-       }
+              if (confirm(`Found active Advance for this IMEI!\nCustomer: ${matchingAdv.partyName}\nAdvance Amount: ₹${advPaid}\n\nDo you want to add this amount to current Sale payments?`)) {
+                 setFormPayments(prev => [...prev, { mode: 'Cash', amount: advPaid }]);
+                 setFormPartyName(matchingAdv.partyName);
+                 if (advItem) {
+                    const updatedItems = [...newItems];
+                    updatedItems[index].productName = advItem.productName;
+                    updatedItems[index].purchasePrice = advItem.purchasePrice;
+                    setFormItems(updatedItems);
+                 }
+                 (window as any)._pendingAdvanceId = matchingAdv.id;
+                 alert("Advance added to payments. The old advance record will be removed upon saving this sale.");
+                 return;
+              }
+           }
 
-       // 2. Inventory Autocomplete (If no advance found, or user declined advance)
-       const matchingProduct = parsedData.activeProducts.find(p => p.imeiNo === value);
-       if (matchingProduct) {
-          const updatedItems = [...newItems];
-          updatedItems[index].productName = matchingProduct.productName;
-          updatedItems[index].purchasePrice = matchingProduct.purchasePrice;
-          setFormItems(updatedItems);
+           // 2. Inventory Autocomplete (If no advance found, or user declined advance)
+           const matchingProduct = parsedData.activeProducts.find(p => p.imeiNo === value);
+           if (matchingProduct) {
+              const updatedItems = [...newItems];
+              updatedItems[index].productName = matchingProduct.productName;
+              updatedItems[index].purchasePrice = matchingProduct.purchasePrice;
+              setFormItems(updatedItems);
+           }
+       } else if (modalType === 'Advance') {
+           const matchingProduct = parsedData.activeProducts.find(p => p.imeiNo === value);
+           if (matchingProduct) {
+              const updatedItems = [...newItems];
+              updatedItems[index].productName = matchingProduct.productName;
+              updatedItems[index].purchasePrice = matchingProduct.purchasePrice;
+              setFormItems(updatedItems);
+           }
+       } else if (modalType === 'Purchase') {
+           const matchingProduct = parsedData.activeProducts.find(p => p.imeiNo === value) || parsedData.inactiveProducts.find(p => p.imeiNo === value);
+           if (matchingProduct) {
+              const updatedItems = [...newItems];
+              updatedItems[index].productName = matchingProduct.productName;
+              setFormItems(updatedItems);
+           }
        }
     }
   };
@@ -373,7 +390,46 @@ const AccountantDashboard = () => {
       }
   };
 
+  const handleClearImported = async () => {
+    if (!user) return alert("Must be signed in");
+    if (!confirm("This will mark ALL currently pending imported items (from prodect.txt) as PAID via UPI. Are you sure?")) return;
+    
+    const importedPending = transactions.filter(tx => 
+        tx.remark === 'Imported from prodect.txt' && tx.paymentStatus !== 'Paid'
+    );
+
+    if (importedPending.length === 0) {
+        return alert("No pending imported items found.");
+    }
+
+    try {
+        for (const tx of importedPending) {
+            const total = getTxTotalPurchase(tx);
+            const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
+            const remaining = total - paid;
+
+            if (remaining > 0) {
+                const newPayments = [...tx.paymentRecords, { mode: 'UPI' as const, amount: remaining }];
+                const { error } = await supabase
+                    .from('transactions')
+                    .update({ 
+                        payment_records: newPayments,
+                        payment_status: 'Paid'
+                    })
+                    .eq('id', tx.id);
+                
+                if (error) throw error;
+            }
+        }
+        loadTransactions();
+        alert(`Successfully cleared ${importedPending.length} transactions as UPI.`);
+    } catch (err: any) {
+        alert("Error clearing transactions: " + err.message);
+    }
+  };
+
   const resetForm = () => {
+
     setFormPartyName('');
     setFormGiverName('');
     setFormReceiverName('');
@@ -576,7 +632,7 @@ const AccountantDashboard = () => {
              const custItem = getTxItems(tx).map(it => {
                  let res = tx.partyName && tx.partyName !== '-' ? `${tx.partyName}\n` : '';
                  res += `${it.productName}\nIMEI-${it.imeiNo}`;
-                 if (tx.gift) res += `\nGift: ${tx.gift}`;
+                 if (tx.gift) res += `\n*** GIFT: ${tx.gift.toUpperCase()} ***`;
                  if (tx.remark) res += `\nMsg: ${tx.remark}`;
                  return res;
              }).join('\n\n');
@@ -787,6 +843,22 @@ const AccountantDashboard = () => {
         return '0000-00-00';
     })();
 
+    const filterEndDate = (() => {
+        if (dashboardFilter === 'Today') return new Date().toISOString().split('T')[0];
+        if (dashboardFilter === 'Yesterday') {
+           const d = new Date(); d.setDate(d.getDate() - 1);
+           return d.toISOString().split('T')[0];
+        }
+        if (dashboardFilter === 'SpecificDate') return dashSpecificDate;
+        if (dashboardFilter === 'Month') {
+            const year = parseInt(dashMonth.substring(0,4));
+            const month = parseInt(dashMonth.substring(5,7));
+            const lastDay = new Date(year, month, 0).getDate();
+            return `${dashMonth}-${lastDay.toString().padStart(2, '0')}`;
+        }
+        return '9999-12-31';
+    })();
+
     const isFilterMatch = (d: string) => {
         if (dashboardFilter === 'Today') return d === new Date().toISOString().split('T')[0];
         if (dashboardFilter === 'Yesterday') {
@@ -924,6 +996,15 @@ const AccountantDashboard = () => {
     const inactiveProducts = Array.from(inventoryTracker.values()).filter(p => p.status === 'INACTIVE');
     const totalProductStockPrice = activeProducts.reduce((sum, p) => sum + p.purchasePrice, 0);
 
+    const filteredActiveProducts = Array.from(inventoryTracker.values()).filter(p => {
+        if (p.purchaseDate > filterEndDate) return false;
+        if (p.soldDate && p.soldDate <= filterEndDate) return false;
+        if (p.status === 'INACTIVE' && !p.soldDate) return false;
+        return true;
+    });
+    const filteredStockCount = filteredActiveProducts.length;
+    const filteredStockValuation = filteredActiveProducts.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+
     const activeBrandCounts = activeProducts.reduce((acc, p) => {
       const brand = p.productName.trim().split(/\s+|-/)[0].toUpperCase();
       if (brand) {
@@ -931,6 +1012,24 @@ const AccountantDashboard = () => {
       }
       return acc;
     }, {} as Record<string, number>);
+
+    const pendingReceived = sortedTx.reduce((sum, tx) => {
+      if (tx.type === 'Sale' || tx.type === 'Advance') {
+        const total = getTxTotalSelling(tx);
+        const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
+        return sum + Math.max(0, total - paid);
+      }
+      return sum;
+    }, 0);
+
+    const pendingGiven = sortedTx.reduce((sum, tx) => {
+      if (tx.type === 'Purchase') {
+        const total = getTxTotalPurchase(tx);
+        const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
+        return sum + Math.max(0, total - paid);
+      }
+      return sum;
+    }, 0);
 
     return {
       cards: [
@@ -941,9 +1040,11 @@ const AccountantDashboard = () => {
         { label: 'Cash OUT (Filtered)', value: `₹${filteredCashOut.toLocaleString()}`, icon: '⬆️', color: 'text-rose-500', bg: 'bg-rose-50 dark:bg-rose-900/20' },
         { label: 'Active Inventory Stock', value: activeProducts.length.toString(), icon: '🏷️', color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-900/20' },
       ],
-      details: { totalDebit: 0, totalCredit: 0, openingBalance, closingBalance, totalProfit: periodProfit, totalLoss: periodLoss, filteredCashIn, filteredCashOut, filteredSalesTotal, filteredPurchasesTotal },
+      details: { totalDebit: 0, totalCredit: 0, openingBalance, closingBalance, totalProfit: periodProfit, totalLoss: periodLoss, filteredCashIn, filteredCashOut, filteredSalesTotal, filteredPurchasesTotal, filteredStockCount, filteredStockValuation },
       activeProducts, inactiveProducts, totalProductStockPrice, activeAdvances: Array.from(advancesMap.values()), gifts: Array.from(giftTracker.entries()), modelsSold: Array.from(modelTracker.entries()), activeBrandCounts,
+      pendingReceived, pendingGiven,
       monthlyData: (() => {
+
          const allMonths = Array.from(new Set(sortedTx.map(t => t.date.slice(0, 7)))).sort();
          const data: any[] = [];
          
@@ -1274,7 +1375,7 @@ const AccountantDashboard = () => {
         </div>
 
         <nav className="flex-1 px-4 space-y-1 mt-2">
-          {['Dashboard', 'Sales', 'Purchases', 'Advances', 'Cash Tracker', 'Inventory', 'All Details'].map((item) => (
+          {['Dashboard', 'Sales', 'Purchases', 'Advances', 'Pending', 'Cash Tracker', 'Inventory', 'All Details'].map((item) => (
             <button
               key={item}
               onClick={() => { setActiveTab(item); setShowMobileMenu(false); }}
@@ -1435,8 +1536,49 @@ const AccountantDashboard = () => {
           <div className="bg-white dark:bg-[#1e293b] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col flex-1 p-6 lg:p-10 animate-in fade-in duration-300">
              <h2 className="text-2xl font-bold mb-6 border-b border-slate-100 dark:border-slate-800 pb-4 flex items-center gap-2">📊 Comprehensive Financial Summary</h2>
              
+             {/* All Details Summary Cards */}
+             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 cursor-default">
+               <div className="bg-emerald-50 dark:bg-emerald-900/20 p-5 rounded-2xl border border-emerald-100/50 dark:border-emerald-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-emerald-100 dark:border-emerald-800 shadow-sm">📈</div>
+                    <div>
+                      <p className="text-emerald-600 dark:text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">Total Profit (Filtered)</p>
+                      <p className="text-xl font-black text-emerald-600 tracking-tight">₹{stats.details.totalProfit.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-rose-50 dark:bg-rose-900/20 p-5 rounded-2xl border border-rose-100/50 dark:border-rose-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-rose-100 dark:border-rose-800 shadow-sm">📉</div>
+                    <div>
+                      <p className="text-rose-600 dark:text-rose-400 text-xs font-bold uppercase tracking-wider mb-1">Total Loss (Filtered)</p>
+                      <p className="text-xl font-black text-rose-600 tracking-tight">₹{stats.details.totalLoss.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-blue-50 dark:bg-blue-900/20 p-5 rounded-2xl border border-blue-100/50 dark:border-blue-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-blue-100 dark:border-blue-800 shadow-sm">📦</div>
+                    <div>
+                      <p className="text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider mb-1">Stock Value</p>
+                      <p className="text-xl font-black text-blue-600 tracking-tight">₹{parsedData.totalProductStockPrice.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-2xl border border-indigo-100/50 dark:border-indigo-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-indigo-100 dark:border-indigo-800 shadow-sm">⚖️</div>
+                    <div>
+                      <p className="text-indigo-600 dark:text-indigo-400 text-xs font-bold uppercase tracking-wider mb-1">Closing Balance</p>
+                      <p className="text-xl font-black text-indigo-600 tracking-tight">₹{stats.details.closingBalance.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+             </section>
+
              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
                 <div className="bg-slate-50 dark:bg-slate-900/50 p-6 rounded-xl border border-slate-200 dark:border-slate-700">
+
                    <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Cash Flow (Filtered Period)</h3>
                    <div className="space-y-4">
                       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm border border-slate-100 dark:border-slate-700">
@@ -1485,11 +1627,11 @@ const AccountantDashboard = () => {
                    <div className="space-y-4">
                       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm border border-slate-100 dark:border-slate-700">
                          <span className="font-medium text-sm text-slate-600 dark:text-slate-300">Total Active Products</span>
-                         <span className="font-bold text-xl">{parsedData.activeProducts.length}</span>
+                         <span className="font-bold text-xl">{stats.details.filteredStockCount}</span>
                       </div>
                       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm border border-slate-100 dark:border-slate-700">
                          <span className="font-medium text-sm text-slate-600 dark:text-slate-300">Total Stock Value</span>
-                         <span className="font-bold text-xl font-mono text-blue-600 dark:text-blue-400">₹{parsedData.totalProductStockPrice.toLocaleString()}</span>
+                         <span className="font-bold text-xl font-mono text-blue-600 dark:text-blue-400">₹{stats.details.filteredStockValuation.toLocaleString()}</span>
                       </div>
                    </div>
                 </div>
@@ -1622,7 +1764,7 @@ const AccountantDashboard = () => {
                              </div>
                              {(tx.remark || tx.gift) && (
                                <div className="mt-1 flex flex-col gap-1 max-w-[300px]">
-                                 {tx.gift && <span className="text-xs text-pink-600 bg-pink-100 dark:bg-pink-900/30 px-2 py-1 rounded-md max-w-max whitespace-normal break-words">🎁 Gift: {tx.gift}</span>}
+                                 {tx.gift && <span className="text-xs font-bold text-pink-600 bg-pink-100 dark:bg-pink-900/30 px-2 py-1 rounded-md max-w-max whitespace-normal break-words">🎁 Gift: {tx.gift}</span>}
                                  {tx.remark && <span className="text-xs italic text-slate-500 dark:text-slate-400 whitespace-normal break-words">"{tx.remark}"</span>}
                                </div>
                              )}
@@ -1684,7 +1826,179 @@ const AccountantDashboard = () => {
           </div>
         )}
 
+        {activeTab === 'All Details' ? (
+          <div className="flex flex-col gap-8 animate-in fade-in duration-300 flex-1">
+             
+             {/* All Details Summary Cards */}
+             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+               <div className="bg-emerald-50 dark:bg-emerald-900/20 p-5 rounded-2xl border border-emerald-100/50 dark:border-emerald-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-emerald-100 dark:border-emerald-800 shadow-sm">📈</div>
+                    <div>
+                      <p className="text-emerald-600 dark:text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">Total Profit (Filtered)</p>
+                      <p className="text-xl font-black text-emerald-600 tracking-tight">₹{stats.details.totalProfit.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-rose-50 dark:bg-rose-900/20 p-5 rounded-2xl border border-rose-100/50 dark:border-rose-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-rose-100 dark:border-rose-800 shadow-sm">📉</div>
+                    <div>
+                      <p className="text-rose-600 dark:text-rose-400 text-xs font-bold uppercase tracking-wider mb-1">Total Loss (Filtered)</p>
+                      <p className="text-xl font-black text-rose-600 tracking-tight">₹{stats.details.totalLoss.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-blue-50 dark:bg-blue-900/20 p-5 rounded-2xl border border-blue-100/50 dark:border-blue-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-blue-100 dark:border-blue-800 shadow-sm">📦</div>
+                    <div>
+                      <p className="text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider mb-1">Stock Value</p>
+                      <p className="text-xl font-black text-blue-600 tracking-tight">₹{parsedData.totalProductStockPrice.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-2xl border border-indigo-100/50 dark:border-indigo-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-indigo-100 dark:border-indigo-800 shadow-sm">⚖️</div>
+                    <div>
+                      <p className="text-indigo-600 dark:text-indigo-400 text-xs font-bold uppercase tracking-wider mb-1">Closing Balance</p>
+                      <p className="text-xl font-black text-indigo-600 tracking-tight">₹{stats.details.closingBalance.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+             </section>
+
+             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+             </div>
+          </div>
+        ) : null}
+
+        {activeTab === 'Pending' && (
+          <div className="flex flex-col gap-6 animate-in fade-in duration-300 flex-1">
+            <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-rose-50 dark:bg-rose-900/20 p-5 rounded-2xl border border-rose-100/50 dark:border-rose-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-rose-100 dark:border-rose-800 shadow-sm">📥</div>
+                    <div>
+                      <p className="text-rose-600 dark:text-rose-400 text-xs font-bold uppercase tracking-wider mb-1">Pending to Receive</p>
+                      <p className="text-xl font-black text-rose-600 tracking-tight">₹{parsedData.pendingReceived.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-amber-50 dark:bg-amber-900/20 p-5 rounded-2xl border border-amber-100/50 dark:border-amber-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-amber-100 dark:border-amber-800 shadow-sm">📤</div>
+                    <div>
+                      <p className="text-amber-600 dark:text-amber-400 text-xs font-bold uppercase tracking-wider mb-1">Pending to Give</p>
+                      <p className="text-xl font-black text-amber-600 tracking-tight">₹{parsedData.pendingGiven.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+            </section>
+
+            <div className="bg-white dark:bg-[#1e293b] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col flex-1">
+               <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50 gap-4">
+                 <h2 className="font-bold text-lg">All Pending Dues</h2>
+                 <button 
+                   onClick={handleClearImported}
+                   className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all shadow-sm flex items-center gap-2"
+                 >
+                   ⚡ CLEAR IMPORTED (UPI)
+                 </button>
+               </div>
+               <div className="overflow-x-auto min-h-[300px]">
+               <table className="w-full text-left whitespace-nowrap">
+                 <thead>
+                   <tr className="bg-slate-100/50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider font-semibold">
+                     <th className="px-6 py-4">No./Date</th>
+                     <th className="px-6 py-4">Party & Products</th>
+                     <th className="px-6 py-4 text-right">Financials</th>
+                     <th className="px-6 py-4 text-right">Due Amount</th>
+                     <th className="px-6 py-4 text-right">Action</th>
+                   </tr>
+                 </thead>
+                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                   {(() => {
+                      const pendingTx = transactions.filter(t => t.paymentStatus !== 'Paid').filter(t => {
+                        const q = searchQuery.toLowerCase();
+                        if (!q) return true;
+                        return (t.partyName && t.partyName.toLowerCase().includes(q)) ||
+                               (t.remark && t.remark.toLowerCase().includes(q)) ||
+                               getTxItems(t).some(it => it.productName.toLowerCase().includes(q) || it.imeiNo.toLowerCase().includes(q));
+                      });
+
+                      if (pendingTx.length === 0) {
+                        return <tr><td colSpan={5} className="py-12 text-center text-slate-500">No pending transactions found.</td></tr>;
+                      }
+
+                      return pendingTx.map((tx, idx) => {
+                         const total = (tx.type === 'Sale' || tx.type === 'Advance') ? getTxTotalSelling(tx) : getTxTotalPurchase(tx);
+                         const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
+                         const due = Math.max(0, total - paid);
+                         
+                         return (
+                           <tr key={tx.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors group">
+                             <td className="px-6 py-4 align-top">
+                               <div className="flex flex-col pt-1">
+                                 <span className="text-sm font-mono font-bold text-slate-700 dark:text-slate-300">{idx + 1}</span>
+                                 <span className="text-xs text-slate-500">{tx.date}</span>
+                                 <span className={`mt-2 text-[10px] w-max px-2 py-0.5 rounded font-bold uppercase tracking-tight ${tx.type === 'Sale' || tx.type === 'Advance' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                   {tx.type}
+                                 </span>
+                               </div>
+                             </td>
+                             <td className="px-6 py-4 align-top">
+                               <div className="flex flex-col gap-2">
+                                 <div className="flex items-center gap-2">
+                                   {tx.partyName && tx.partyName.toLowerCase() !== 'general' && tx.partyName !== '-' && (
+                                     <span className="font-bold text-xs text-slate-500 uppercase">{tx.partyName}</span>
+                                   )}
+                                   <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[10px] text-slate-500 lowercase font-medium border border-slate-200 dark:border-slate-700">{getTxItems(tx).length} item(s)</span>
+                                 </div>
+                                 <div className="flex flex-col gap-2 border-l-2 border-slate-200 dark:border-slate-700 pl-3 py-1">
+                                   {getTxItems(tx).map((it, idx) => (
+                                     <div key={idx} className="flex flex-col whitespace-normal min-w-[200px]">
+                                       <span className="font-semibold text-sm leading-tight text-slate-800 dark:text-slate-200">{it.productName}</span>
+                                       <span className="text-[11px] font-mono text-slate-500 mt-0.5">IMEI: {it.imeiNo}</span>
+                                     </div>
+                                   ))}
+                                 </div>
+                                 {(tx.remark || tx.gift) && (
+                                   <div className="mt-1 flex flex-col gap-1 max-w-[300px]">
+                                     {tx.gift && <span className="text-xs font-bold text-pink-600 bg-pink-100 dark:bg-pink-900/30 px-2 py-1 rounded-md max-w-max whitespace-normal break-words">🎁 Gift: {tx.gift}</span>}
+                                     {tx.remark && <span className="text-xs italic text-slate-500 dark:text-slate-400 whitespace-normal break-words">"{tx.remark}"</span>}
+                                   </div>
+                                 )}
+                               </div>
+                             </td>
+                             <td className="px-6 py-4 align-top pt-5 text-right">
+                               <div className="text-xs space-y-1 inline-block text-left min-w-[100px]">
+                                 <div className="flex justify-between gap-4"><span>Total:</span> <span className="font-mono font-bold">₹{total}</span></div>
+                                 <div className="flex justify-between gap-4"><span>Paid:</span> <span className="font-mono">₹{paid}</span></div>
+                               </div>
+                             </td>
+                             <td className="px-6 py-4 align-top pt-5 text-right">
+                               <span className="text-xl font-black font-mono text-rose-600">₹{due.toLocaleString()}</span>
+                             </td>
+                             <td className="px-6 py-4 text-right align-top pt-5">
+                                <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button onClick={() => openEditModal(tx)} className="text-xs text-indigo-500 hover:underline bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 font-semibold">Edit / Pay</button>
+                                </div>
+                             </td>
+                           </tr>
+                         );
+                      });
+                   })()}
+                 </tbody>
+               </table>
+             </div>
+          </div>
+        </div>
+        )}
+
         {activeTab === 'Cash Tracker' && (
+
           <div className="flex flex-col gap-6 animate-in fade-in duration-300 flex-1">
             <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white dark:bg-[#1e293b] p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition-shadow">
