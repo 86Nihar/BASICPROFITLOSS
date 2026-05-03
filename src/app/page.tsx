@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 import type { User } from '@supabase/supabase-js';
 
 interface PaymentRecord {
-  mode: 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Netbanking' | 'Exchange';
+  mode: 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Netbanking' | 'Exchange' | 'Bajaj Finserv';
   amount: number;
 }
 
@@ -531,6 +531,8 @@ const AccountantDashboard = () => {
        doc.text(`Total Expense (Cash Out): Rs. ${parsedData.details.filteredCashOut}`, margin.left, currentY + 30);
        doc.text(`Total Generated Profit: Rs. ${parsedData.details.totalProfit}`, margin.left, currentY + 36);
        doc.text(`Total Loss: Rs. ${parsedData.details.totalLoss}`, margin.left, currentY + 42);
+       doc.text(`Total Items Purchased (Filtered): ${parsedData.details.filteredPurchasesCount}`, margin.left, currentY + 48);
+       doc.text(`Total Items Sold (Filtered): ${parsedData.details.filteredSalesCount}`, margin.left, currentY + 54);
        
        let rightX = 140;
        doc.text(`Total Gifts Tracked:`, rightX, currentY);
@@ -563,8 +565,8 @@ const AccountantDashboard = () => {
        let totalSales = 0, totalPurchases = 0, totalProfit = 0, totalLoss = 0;
        let reportSalesItemCount = 0, reportPurchasesItemCount = 0;
        
-       const salesPaymentTotals: Record<string, number> = { Cash: 0, UPI: 0, 'Credit Card': 0, 'Debit Card': 0, Netbanking: 0, Exchange: 0 };
-       const purchasePaymentTotals: Record<string, number> = { Cash: 0, UPI: 0, 'Credit Card': 0, 'Debit Card': 0, Netbanking: 0, Exchange: 0 };
+       const salesPaymentTotals: Record<string, number> = { Cash: 0, UPI: 0, 'Credit Card': 0, 'Debit Card': 0, Netbanking: 0, Exchange: 0, 'Bajaj Finserv': 0 };
+       const purchasePaymentTotals: Record<string, number> = { Cash: 0, UPI: 0, 'Credit Card': 0, 'Debit Card': 0, Netbanking: 0, Exchange: 0, 'Bajaj Finserv': 0 };
        const pendingSalesDues: {name: string, due: number}[] = [];
        const pendingPurchaseDues: {name: string, due: number}[] = [];
 
@@ -895,6 +897,7 @@ const AccountantDashboard = () => {
 
     // Tracker for stats cards
     let filteredSalesTotal = 0, filteredPurchasesTotal = 0;
+    let filteredSalesCount = 0, filteredPurchasesCount = 0;
     let filteredCashIn = 0, filteredCashOut = 0;
     let todaySalesCount = 0, todayPurchasesCount = 0;
 
@@ -944,6 +947,7 @@ const AccountantDashboard = () => {
         });
         if (isMatch && tx.date >= REFERENCE_DATE) {
             filteredPurchasesTotal += txPur;
+            filteredPurchasesCount += getTxItems(tx).length;
             filteredCashOut += txCashInTotal;
             if (isToday) todayPurchasesCount += getTxItems(tx).length;
         }
@@ -963,6 +967,7 @@ const AccountantDashboard = () => {
         });
         if (isMatch && tx.date >= REFERENCE_DATE) {
             filteredSalesTotal += txSell;
+            filteredSalesCount += getTxItems(tx).length;
             filteredCashIn += txCashInTotal;
             if (isToday) todaySalesCount += getTxItems(tx).length;
             
@@ -1040,7 +1045,7 @@ const AccountantDashboard = () => {
         { label: 'Cash OUT (Filtered)', value: `₹${filteredCashOut.toLocaleString()}`, icon: '⬆️', color: 'text-rose-500', bg: 'bg-rose-50 dark:bg-rose-900/20' },
         { label: 'Active Inventory Stock', value: activeProducts.length.toString(), icon: '🏷️', color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-900/20' },
       ],
-      details: { totalDebit: 0, totalCredit: 0, openingBalance, closingBalance, totalProfit: periodProfit, totalLoss: periodLoss, filteredCashIn, filteredCashOut, filteredSalesTotal, filteredPurchasesTotal, filteredStockCount, filteredStockValuation },
+      details: { totalDebit: 0, totalCredit: 0, openingBalance, closingBalance, totalProfit: periodProfit, totalLoss: periodLoss, filteredCashIn, filteredCashOut, filteredSalesTotal, filteredPurchasesTotal, filteredSalesCount, filteredPurchasesCount, filteredStockCount, filteredStockValuation },
       activeProducts, inactiveProducts, totalProductStockPrice, activeAdvances: Array.from(advancesMap.values()), gifts: Array.from(giftTracker.entries()), modelsSold: Array.from(modelTracker.entries()), activeBrandCounts,
       pendingReceived, pendingGiven,
       monthlyData: (() => {
@@ -1283,6 +1288,7 @@ const AccountantDashboard = () => {
                               <option value="Debit Card">Debit Card</option>
                               <option value="Netbanking">Netbanking</option>
                               <option value="Exchange">Exchange</option>
+                              <option value="Bajaj Finserv">Bajaj Finserv</option>
                             </select>
                             <button type="button" onClick={addPayment} className="bg-slate-800 dark:bg-slate-100 text-white dark:text-slate-900 font-bold px-4 rounded-lg hover:opacity-90 cursor-pointer">Add</button>
                         </div>
@@ -1537,7 +1543,7 @@ const AccountantDashboard = () => {
              <h2 className="text-2xl font-bold mb-6 border-b border-slate-100 dark:border-slate-800 pb-4 flex items-center gap-2">📊 Comprehensive Financial Summary</h2>
              
              {/* All Details Summary Cards */}
-             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 cursor-default">
+             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8 cursor-default">
                <div className="bg-emerald-50 dark:bg-emerald-900/20 p-5 rounded-2xl border border-emerald-100/50 dark:border-emerald-800/10 shadow-sm hover:shadow-md transition-all">
                   <div className="flex flex-col gap-3">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-emerald-100 dark:border-emerald-800 shadow-sm">📈</div>
@@ -1561,7 +1567,7 @@ const AccountantDashboard = () => {
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-blue-100 dark:border-blue-800 shadow-sm">📦</div>
                     <div>
                       <p className="text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider mb-1">Stock Value</p>
-                      <p className="text-xl font-black text-blue-600 tracking-tight">₹{parsedData.totalProductStockPrice.toLocaleString()}</p>
+                      <p className="text-xl font-black text-blue-600 tracking-tight">₹{stats.details.filteredStockValuation.toLocaleString()}</p>
                     </div>
                   </div>
                </div>
@@ -1571,6 +1577,24 @@ const AccountantDashboard = () => {
                     <div>
                       <p className="text-indigo-600 dark:text-indigo-400 text-xs font-bold uppercase tracking-wider mb-1">Closing Balance</p>
                       <p className="text-xl font-black text-indigo-600 tracking-tight">₹{stats.details.closingBalance.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-amber-50 dark:bg-amber-900/20 p-5 rounded-2xl border border-amber-100/50 dark:border-amber-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-amber-100 dark:border-amber-800 shadow-sm">📥</div>
+                    <div>
+                      <p className="text-amber-600 dark:text-amber-400 text-xs font-bold uppercase tracking-wider mb-1">Items Purchased (Filtered)</p>
+                      <p className="text-xl font-black text-amber-600 tracking-tight">{stats.details.filteredPurchasesCount} Units</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="bg-violet-50 dark:bg-violet-900/20 p-5 rounded-2xl border border-violet-100/50 dark:border-violet-800/10 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-violet-100 dark:border-violet-800 shadow-sm">🏷️</div>
+                    <div>
+                      <p className="text-violet-600 dark:text-violet-400 text-xs font-bold uppercase tracking-wider mb-1">Items Sold (Filtered)</p>
+                      <p className="text-xl font-black text-violet-600 tracking-tight">{stats.details.filteredSalesCount} Units</p>
                     </div>
                   </div>
                </div>
@@ -1693,7 +1717,7 @@ const AccountantDashboard = () => {
                               <td className="px-6 py-4 font-mono text-slate-600 dark:text-slate-400">₹{m.opening.toLocaleString()}</td>
                               <td className="px-6 py-4 font-mono text-emerald-600">₹{m.sales.toLocaleString()}</td>
                               <td className="px-6 py-4 font-mono text-amber-600">₹{m.purchases.toLocaleString()}</td>
-                              <td className="px-6 py-4 font-mono text-amber-600">₹{m.profit.toLocaleString()}</td>
+                              <td className="px-6 py-4 font-mono text-emerald-600">₹{m.profit.toLocaleString()}</td>
                               <td className="px-6 py-4 font-mono font-bold text-indigo-600 dark:text-indigo-400">₹{m.closing.toLocaleString()}</td>
                               <td className={`px-6 py-4 font-bold ${m.closing - m.opening >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                                 {m.closing - m.opening >= 0 ? '+' : ''}₹{(m.closing - m.opening).toLocaleString()}
@@ -1826,53 +1850,7 @@ const AccountantDashboard = () => {
           </div>
         )}
 
-        {activeTab === 'All Details' ? (
-          <div className="flex flex-col gap-8 animate-in fade-in duration-300 flex-1">
-             
-             {/* All Details Summary Cards */}
-             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-               <div className="bg-emerald-50 dark:bg-emerald-900/20 p-5 rounded-2xl border border-emerald-100/50 dark:border-emerald-800/10 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex flex-col gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-emerald-100 dark:border-emerald-800 shadow-sm">📈</div>
-                    <div>
-                      <p className="text-emerald-600 dark:text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">Total Profit (Filtered)</p>
-                      <p className="text-xl font-black text-emerald-600 tracking-tight">₹{stats.details.totalProfit.toLocaleString()}</p>
-                    </div>
-                  </div>
-               </div>
-               <div className="bg-rose-50 dark:bg-rose-900/20 p-5 rounded-2xl border border-rose-100/50 dark:border-rose-800/10 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex flex-col gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-rose-100 dark:border-rose-800 shadow-sm">📉</div>
-                    <div>
-                      <p className="text-rose-600 dark:text-rose-400 text-xs font-bold uppercase tracking-wider mb-1">Total Loss (Filtered)</p>
-                      <p className="text-xl font-black text-rose-600 tracking-tight">₹{stats.details.totalLoss.toLocaleString()}</p>
-                    </div>
-                  </div>
-               </div>
-               <div className="bg-blue-50 dark:bg-blue-900/20 p-5 rounded-2xl border border-blue-100/50 dark:border-blue-800/10 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex flex-col gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-blue-100 dark:border-blue-800 shadow-sm">📦</div>
-                    <div>
-                      <p className="text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-wider mb-1">Stock Value</p>
-                      <p className="text-xl font-black text-blue-600 tracking-tight">₹{parsedData.totalProductStockPrice.toLocaleString()}</p>
-                    </div>
-                  </div>
-               </div>
-               <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-2xl border border-indigo-100/50 dark:border-indigo-800/10 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex flex-col gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-white dark:bg-slate-900 border border-indigo-100 dark:border-indigo-800 shadow-sm">⚖️</div>
-                    <div>
-                      <p className="text-indigo-600 dark:text-indigo-400 text-xs font-bold uppercase tracking-wider mb-1">Closing Balance</p>
-                      <p className="text-xl font-black text-indigo-600 tracking-tight">₹{stats.details.closingBalance.toLocaleString()}</p>
-                    </div>
-                  </div>
-               </div>
-             </section>
 
-             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-             </div>
-          </div>
-        ) : null}
 
         {activeTab === 'Pending' && (
           <div className="flex flex-col gap-6 animate-in fade-in duration-300 flex-1">
