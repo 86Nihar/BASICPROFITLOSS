@@ -1032,23 +1032,34 @@ const AccountantDashboard = () => {
       return acc;
     }, {} as Record<string, number>);
 
-    const pendingReceived = sortedTx.reduce((sum, tx) => {
-      if (tx.type === 'Sale' || tx.type === 'Advance') {
-        const total = getTxTotalSelling(tx);
-        const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
-        return sum + Math.max(0, total - paid);
-      }
-      return sum;
-    }, 0);
+    const groupedPendingReceivedMap: Record<string, number> = {};
+    const groupedPendingGivenMap: Record<string, number> = {};
 
-    const pendingGiven = sortedTx.reduce((sum, tx) => {
-      if (tx.type === 'Purchase') {
-        const total = getTxTotalPurchase(tx);
-        const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
-        return sum + Math.max(0, total - paid);
+    sortedTx.forEach(tx => {
+      const total = (tx.type === 'Sale' || tx.type === 'Advance') ? getTxTotalSelling(tx) : getTxTotalPurchase(tx);
+      const paid = tx.paymentRecords.reduce((s, p) => s + p.amount, 0);
+      const due = Math.max(0, total - paid);
+      
+      if (due > 0) {
+        const name = tx.partyName && tx.partyName !== '-' ? tx.partyName : 'General';
+        if (tx.type === 'Sale' || tx.type === 'Advance') {
+          groupedPendingReceivedMap[name] = (groupedPendingReceivedMap[name] || 0) + due;
+        } else if (tx.type === 'Purchase') {
+          groupedPendingGivenMap[name] = (groupedPendingGivenMap[name] || 0) + due;
+        }
       }
-      return sum;
-    }, 0);
+    });
+
+    const groupedPendingReceived = Object.entries(groupedPendingReceivedMap)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount);
+
+    const groupedPendingGiven = Object.entries(groupedPendingGivenMap)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount);
+
+    const pendingReceived = Object.values(groupedPendingReceivedMap).reduce((sum, val) => sum + val, 0);
+    const pendingGiven = Object.values(groupedPendingGivenMap).reduce((sum, val) => sum + val, 0);
 
     return {
       cards: [
@@ -1061,7 +1072,7 @@ const AccountantDashboard = () => {
       ],
       details: { totalDebit: 0, totalCredit: 0, openingBalance, closingBalance, totalProfit: periodProfit, totalLoss: periodLoss, filteredCashIn, filteredCashOut, filteredSalesTotal, filteredPurchasesTotal, filteredSalesCount, filteredPurchasesCount, filteredStockCount, filteredStockValuation },
       activeProducts, inactiveProducts, filteredActiveProducts, totalProductStockPrice, activeAdvances: Array.from(advancesMap.values()), gifts: Array.from(giftTracker.entries()), modelsSold: Array.from(modelTracker.entries()), activeBrandCounts,
-      pendingReceived, pendingGiven,
+      pendingReceived, pendingGiven, groupedPendingReceived, groupedPendingGiven,
       monthlyData: (() => {
 
          const allMonths = Array.from(new Set(sortedTx.map(t => t.date.slice(0, 7)))).sort();
@@ -1389,9 +1400,6 @@ const AccountantDashboard = () => {
                💵 CASH IN/OUT
              </button>
            </div>
-           <button id="import-btn" onClick={handleBulkImport} className="w-full text-xs font-bold bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white py-2 rounded-lg transition-colors cursor-pointer mt-1">
-             ⚡ IMPORT TXT
-           </button>
         </div>
 
         <nav className="flex-1 px-4 space-y-1 mt-2">
@@ -1889,15 +1897,50 @@ const AccountantDashboard = () => {
                 </div>
             </section>
 
+            {/* Grouped Pending Summaries */}
+            <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white dark:bg-[#1e293b] p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                  <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-rose-500 rounded-full"></span>
+                    Customer Wise Pending (Receive)
+                  </h3>
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                    {parsedData.groupedPendingReceived.length === 0 ? (
+                      <p className="text-sm text-slate-400 italic">No pending collections.</p>
+                    ) : (
+                      parsedData.groupedPendingReceived.map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-100 dark:border-slate-700 hover:border-rose-200 dark:hover:border-rose-900/30 transition-colors">
+                          <span className="font-bold text-slate-700 dark:text-slate-200 text-sm">{item.name}</span>
+                          <span className="font-black text-rose-600 font-mono">₹{item.amount.toLocaleString()}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-[#1e293b] p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                  <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-amber-500 rounded-full"></span>
+                    Vendor Wise Pending (Give)
+                  </h3>
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                    {parsedData.groupedPendingGiven.length === 0 ? (
+                      <p className="text-sm text-slate-400 italic">No pending payments.</p>
+                    ) : (
+                      parsedData.groupedPendingGiven.map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-100 dark:border-slate-700 hover:border-amber-200 dark:hover:border-amber-900/30 transition-colors">
+                          <span className="font-bold text-slate-700 dark:text-slate-200 text-sm">{item.name}</span>
+                          <span className="font-black text-amber-600 font-mono">₹{item.amount.toLocaleString()}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+            </section>
+
             <div className="bg-white dark:bg-[#1e293b] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col flex-1">
                <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50 gap-4">
                  <h2 className="font-bold text-lg">All Pending Dues</h2>
-                 <button 
-                   onClick={handleClearImported}
-                   className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all shadow-sm flex items-center gap-2"
-                 >
-                   ⚡ CLEAR IMPORTED (UPI)
-                 </button>
                </div>
                <div className="overflow-x-auto min-h-[300px]">
                <table className="w-full text-left whitespace-nowrap">
