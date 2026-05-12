@@ -51,8 +51,8 @@ const getTxItems = (tx: TransactionRecord): TransactionItem[] => {
   }];
 };
 
-const getTxTotalPurchase = (tx: TransactionRecord) => getTxItems(tx).reduce((sum, item) => sum + item.purchasePrice, 0);
-const getTxTotalSelling = (tx: TransactionRecord) => getTxItems(tx).reduce((sum, item) => sum + item.sellingPrice, 0);
+const getTxTotalPurchase = (tx: TransactionRecord) => getTxItems(tx).reduce((sum, item) => sum + Number(item.purchasePrice || 0), 0);
+const getTxTotalSelling = (tx: TransactionRecord) => getTxItems(tx).reduce((sum, item) => sum + Number(item.sellingPrice || 0), 0);
 
 const AccountantDashboard = () => {
   const [activeTab, setActiveTab] = useState('Dashboard');
@@ -523,8 +523,8 @@ const AccountantDashboard = () => {
 
     if (reportType === 'AllDetails') {
        doc.setFontSize(11);
-       doc.text(`Total Active Products: ${parsedData.activeProducts.length}`, margin.left, currentY);
-       doc.text(`Total Stock Value: Rs. ${parsedData.totalProductStockPrice}`, margin.left, currentY + 6);
+       doc.text(`Total Active Products: ${parsedData.details.filteredStockCount}`, margin.left, currentY);
+       doc.text(`Total Stock Value: Rs. ${parsedData.details.filteredStockValuation.toLocaleString()}`, margin.left, currentY + 6);
        doc.text(`Opening Balance: Rs. ${parsedData.details.openingBalance}`, margin.left, currentY + 12);
        doc.text(`Closing Balance: Rs. ${parsedData.details.closingBalance}`, margin.left, currentY + 18);
        doc.text(`Total Income (Cash In): Rs. ${parsedData.details.filteredCashIn}`, margin.left, currentY + 24);
@@ -749,32 +749,46 @@ const AccountantDashboard = () => {
        
        autoTable(doc, { head: [["Date", "Type", "Party / Details", "Debit (IN)", "Credit (OUT)"]], body: cRows, startY: currentY + 18, margin, styles: { cellWidth: 'auto', fontSize: 9, overflow: 'linebreak' }, headStyles: { fillColor: [59, 130, 246] }, columnStyles: { 2: { cellWidth: 100 } } });
     } else if (reportType === 'ItemsReport') {
-       doc.setFontSize(14);
-       doc.text(`Inventory Items Ledger`, margin.left, currentY);
-       
-       const activeDateFiltered = parsedData.activeProducts.filter(p => reportFilter === 'All' || (reportFilter === 'Today' && p.purchaseDate === new Date().toISOString().split('T')[0]) || (reportFilter === 'Yesterday' && p.purchaseDate === new Date(Date.now() - 86400000).toISOString().split('T')[0]) || (reportFilter === 'SpecificDate' && p.purchaseDate === reportSpecificDate) || (reportFilter === 'Month' && p.purchaseDate?.startsWith(reportMonth)));
-       
-       const inactiveDateFiltered = parsedData.inactiveProducts.filter(p => reportFilter === 'All' || (reportFilter === 'Today' && p.soldDate === new Date().toISOString().split('T')[0]) || (reportFilter === 'Yesterday' && p.soldDate === new Date(Date.now() - 86400000).toISOString().split('T')[0]) || (reportFilter === 'SpecificDate' && p.soldDate === reportSpecificDate) || (reportFilter === 'Month' && p.soldDate?.startsWith(reportMonth)));
-       
-       currentY += 8;
-       doc.setFontSize(11);
-       doc.text(`Active Items Count: ${activeDateFiltered.length}`, margin.left, currentY);
-       doc.text(`Inactive (Sold) Items Count: ${inactiveDateFiltered.length}`, margin.left, currentY + 6);
-       
-       currentY += 12;
-       if (activeDateFiltered.length > 0) {
-           doc.setFontSize(12);
-           doc.text(`Active Options`, margin.left, currentY);
-           const aRows = activeDateFiltered.map(it => [it.purchaseDate, it.productName, it.imeiNo, `Rs. ${it.purchasePrice}`]);
-           autoTable(doc, { head: [["Purchase Date", "Product Name", "IMEI No", "Purchase Price"]], body: aRows, startY: currentY + 4, margin, styles: { cellWidth: 'auto', fontSize: 9, overflow: 'linebreak' }, headStyles: { fillColor: [16, 185, 129] }, columnStyles: { 1: { cellWidth: 80 } } });
-           currentY = (doc as any).lastAutoTable.finalY + 10;
-       }
-       if (inactiveDateFiltered.length > 0) {
-           doc.setFontSize(12);
-           doc.text(`Inactive / Sold Options`, margin.left, currentY);
-           const iRows = inactiveDateFiltered.map(it => [it.soldDate || it.purchaseDate, it.productName, it.imeiNo, `Rs. ${it.purchasePrice}`, `Rs. ${it.sellingPrice || (it as any).sellPrice || 0}`]);
-           autoTable(doc, { head: [["Sold Date", "Product Name", "IMEI No", "Purchase Price", "Selling Price"]], body: iRows, startY: currentY + 4, margin, styles: { cellWidth: 'auto', fontSize: 9, overflow: 'linebreak' }, headStyles: { fillColor: [239, 68, 68] }, columnStyles: { 1: { cellWidth: 80 } } });
-       }
+        doc.setFontSize(14);
+        doc.text(`Inventory Items Ledger`, margin.left, currentY);
+
+        const reportEndDate = (() => {
+            if (reportFilter === 'Today') return new Date().toISOString().split('T')[0];
+            if (reportFilter === 'Yesterday') {
+               const d = new Date(); d.setDate(d.getDate() - 1);
+               return d.toISOString().split('T')[0];
+            }
+            if (reportFilter === 'SpecificDate') return reportSpecificDate;
+            if (reportFilter === 'Month') {
+                const [y, m] = reportMonth.split('-');
+                const lastDay = new Date(parseInt(y), parseInt(m), 0).getDate();
+                return `${reportMonth}-${lastDay.toString().padStart(2, '0')}`;
+            }
+            return '9999-12-31';
+        })();
+
+        const activeDateFiltered = [...parsedData.activeProducts, ...parsedData.inactiveProducts].filter(p => {
+            if (p.purchaseDate > reportEndDate) return false;
+            if (p.soldDate && p.soldDate <= reportEndDate) return false;
+            if (p.status === 'INACTIVE' && !p.soldDate) return false;
+            return true;
+        });
+        const totalValuation = activeDateFiltered.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
+        
+        currentY += 8;
+        doc.setFontSize(11);
+        doc.text(`Total Active Items: ${activeDateFiltered.length}`, margin.left, currentY);
+        doc.text(`Total Inventory Valuation: Rs. ${totalValuation.toLocaleString()}`, margin.left, currentY + 6);
+        
+        currentY += 15;
+        if (activeDateFiltered.length > 0) {
+            doc.setFontSize(12);
+            doc.text(`Active Stock Details`, margin.left, currentY);
+            const aRows = activeDateFiltered.map(it => [it.purchaseDate, it.productName, it.imeiNo, `Rs. ${it.purchasePrice}`]);
+            autoTable(doc, { head: [["Purchase Date", "Product Name", "IMEI No", "Purchase Price"]], body: aRows, startY: currentY + 4, margin, styles: { cellWidth: 'auto', fontSize: 9, overflow: 'linebreak' }, headStyles: { fillColor: [16, 185, 129] }, columnStyles: { 1: { cellWidth: 80 } } });
+        } else {
+            doc.text("No active items found for the selected period.", margin.left, currentY);
+        }
     }
     
     setReportModalOpen(false);
@@ -999,7 +1013,7 @@ const AccountantDashboard = () => {
 
     const activeProducts = Array.from(inventoryTracker.values()).filter(p => p.status === 'ACTIVE');
     const inactiveProducts = Array.from(inventoryTracker.values()).filter(p => p.status === 'INACTIVE');
-    const totalProductStockPrice = activeProducts.reduce((sum, p) => sum + p.purchasePrice, 0);
+    const totalProductStockPrice = activeProducts.reduce((sum, p) => sum + Number(p.purchasePrice || 0), 0);
 
     const filteredActiveProducts = Array.from(inventoryTracker.values()).filter(p => {
         if (p.purchaseDate > filterEndDate) return false;
@@ -1043,10 +1057,10 @@ const AccountantDashboard = () => {
         { label: 'Net Cash In Hand (Filtered)', value: `₹${Math.max(0, filteredCashIn - filteredCashOut).toLocaleString()}`, icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-900/20' },
         { label: 'Cash IN (Filtered)', value: `₹${filteredCashIn.toLocaleString()}`, icon: '⬇️', color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-900/20' },
         { label: 'Cash OUT (Filtered)', value: `₹${filteredCashOut.toLocaleString()}`, icon: '⬆️', color: 'text-rose-500', bg: 'bg-rose-50 dark:bg-rose-900/20' },
-        { label: 'Active Inventory Stock', value: activeProducts.length.toString(), icon: '🏷️', color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-900/20' },
+        { label: 'Active Inventory Stock', value: filteredStockCount.toString(), icon: '🏷️', color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-900/20' },
       ],
       details: { totalDebit: 0, totalCredit: 0, openingBalance, closingBalance, totalProfit: periodProfit, totalLoss: periodLoss, filteredCashIn, filteredCashOut, filteredSalesTotal, filteredPurchasesTotal, filteredSalesCount, filteredPurchasesCount, filteredStockCount, filteredStockValuation },
-      activeProducts, inactiveProducts, totalProductStockPrice, activeAdvances: Array.from(advancesMap.values()), gifts: Array.from(giftTracker.entries()), modelsSold: Array.from(modelTracker.entries()), activeBrandCounts,
+      activeProducts, inactiveProducts, filteredActiveProducts, totalProductStockPrice, activeAdvances: Array.from(advancesMap.values()), gifts: Array.from(giftTracker.entries()), modelsSold: Array.from(modelTracker.entries()), activeBrandCounts,
       pendingReceived, pendingGiven,
       monthlyData: (() => {
 
@@ -1151,7 +1165,7 @@ const AccountantDashboard = () => {
      return { 
        list, 
        cash, 
-       activeItems: filterBySearch(parsedData.activeProducts.filter(p => applyDateFilter(p.purchaseDate))),
+       activeItems: filterBySearch(parsedData.filteredActiveProducts),
        inactiveItems: filterBySearch(parsedData.inactiveProducts.filter(p => applyDateFilter(p.soldDate || p.purchaseDate)))
      };
   }, [transactions, activeTab, dashboardFilter, dashSpecificDate, dashMonth, parsedData.activeAdvances, parsedData.activeProducts, parsedData.inactiveProducts, searchQuery]);
@@ -2118,7 +2132,7 @@ const AccountantDashboard = () => {
                    <h2 className="font-bold text-lg">Inventory Products</h2>
                    <div className="bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1 rounded-lg border border-emerald-100 dark:border-emerald-800">
                       <span className="text-[10px] uppercase font-bold text-emerald-600 dark:text-emerald-400 block">Total Active Stock Value</span>
-                      <span className="text-sm font-bold text-emerald-700 dark:text-emerald-300 font-mono">₹{parsedData.totalProductStockPrice.toLocaleString()}</span>
+                      <span className="text-sm font-bold text-emerald-700 dark:text-emerald-300 font-mono">₹{displayData.activeItems.reduce((sum, it) => sum + Number(it.purchasePrice || 0), 0).toLocaleString()}</span>
                    </div>
                    <div className="flex bg-slate-200 dark:bg-slate-700 p-1 rounded-lg text-sm font-bold">
                      <button onClick={() => { setItemTab('Active'); setSelectedInventory([]); }} className={`px-4 py-1.5 rounded-md transition ${itemTab === 'Active' ? 'bg-white dark:bg-slate-800 shadow-sm text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}`}>Active Items</button>
