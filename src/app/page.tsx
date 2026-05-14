@@ -2290,13 +2290,17 @@ const AccountantDashboard = () => {
                                <button 
                                  onClick={async () => {
                                    if (!user) return alert("Please sign in.");
-                                   const tid = itemTab === 'Active' ? it.purchaseTxId : it.saleTxId;
+                                   
+                                   const newStatus = itemTab === 'Active' ? 'INACTIVE' : 'ACTIVE';
+                                   if (!confirm(`Are you sure you want to mark "${it.productName}" as ${newStatus}?`)) return;
+
+                                   const tid = (itemTab === 'Active' ? it.purchaseTxId : (it.saleTxId || it.purchaseTxId));
                                    const tx = transactions.find(t => t.id === tid);
-                                   if (!tx) return;
+                                   if (!tx) return alert("Original transaction not found.");
                                    
                                    const updatedItems = getTxItems(tx).map(item => {
                                      if (item.imeiNo === it.imeiNo) {
-                                       return { ...item, statusOverride: itemTab === 'Active' ? 'INACTIVE' : 'ACTIVE' };
+                                       return { ...item, statusOverride: newStatus };
                                      }
                                      return item;
                                    });
