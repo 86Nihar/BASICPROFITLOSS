@@ -3,12 +3,23 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import type { User } from '@supabase/supabase-js';
 
 interface PaymentRecord {
   mode: 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Netbanking' | 'Exchange' | 'Bajaj Finserv';
   amount: number;
+}
+
+
+interface Gift {
+  id: string;
+  name: string;
+  price?: number;
+  total_in: number;
+  total_out: number;
+  created_at: string;
 }
 
 interface TransactionRecord {
@@ -57,6 +68,14 @@ const getTxTotalSelling = (tx: TransactionRecord) => getTxItems(tx).reduce((sum,
 const AccountantDashboard = () => {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
+  const [gifts, setGifts] = useState<Gift[]>([]);
+  const [showGiftModal, setShowGiftModal] = useState(false);
+  const [giftName, setGiftName] = useState('');
+  const [giftPrice, setGiftPrice] = useState('');
+  const [giftQuantity, setGiftQuantity] = useState('');
+  const [selectedGiftId, setSelectedGiftId] = useState('');
+  const [editingGiftId, setEditingGiftId] = useState<string | null>(null);
+
   const [isLoaded, setIsLoaded] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -105,6 +124,13 @@ const AccountantDashboard = () => {
         isExcluded: row.is_excluded,
       }));
       setTransactions(mapped);
+
+    // Load gifts
+    const { data: giftsData, error: giftsError } = await supabase.from('gifts').select('*').order('created_at', { ascending: false });
+    if (!giftsError && giftsData) {
+      setGifts(giftsData);
+    }
+
     }
     setIsLoaded(true);
   }, [user]);
@@ -253,6 +279,66 @@ const AccountantDashboard = () => {
     setFormPayments(formPayments.filter((_, i) => i !== index));
   };
 
+  
+  const handleDeleteGift = async (id: string) => {
+    if (confirm('Are you sure you want to delete this gift? This will also remove its associated history.')) {
+      // Delete child transactions first to bypass foreign key constraint
+      await supabase.from('gift_transactions').delete().eq('gift_id', id);
+      
+      const { error } = await supabase.from('gifts').delete().eq('id', id);
+      if (error) alert('Error deleting gift: ' + error.message);
+      else loadTransactions();
+    }
+  };
+
+  const openEditGift = (gift: Gift) => {
+    setEditingGiftId(gift.id);
+    setGiftName(gift.name);
+    setGiftPrice(gift.price ? String(gift.price) : '');
+    setGiftQuantity(String(gift.total_in));
+    setShowGiftModal(true);
+  };
+
+  const handleAddGift = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const newGift = {
+      name: giftName,
+      price: Number(giftPrice) || 0,
+      total_in: Number(giftQuantity) || 0,
+    };
+    
+    if (editingGiftId) {
+      const { error } = await supabase.from('gifts').update(newGift).eq('id', editingGiftId);
+      if (error) {
+        if (error.message.includes('price')) {
+           const { price, ...rest } = newGift;
+           const { error: err2 } = await supabase.from('gifts').update(rest).eq('id', editingGiftId);
+           if (err2) alert('Error updating gift: ' + err2.message);
+           else {
+             setShowGiftModal(false); setGiftName(''); setGiftPrice(''); setGiftQuantity(''); setEditingGiftId(null); loadTransactions();
+           }
+        } else alert('Error updating gift: ' + error.message);
+      } else {
+         setShowGiftModal(false); setGiftName(''); setGiftPrice(''); setGiftQuantity(''); setEditingGiftId(null); loadTransactions();
+      }
+    } else {
+      const giftToInsert = { ...newGift, total_out: 0 };
+      const { error } = await supabase.from('gifts').insert(giftToInsert);
+      if (error) {
+        if (error.message.includes('price')) {
+           const { price, ...rest } = giftToInsert;
+           const { error: err2 } = await supabase.from('gifts').insert(rest);
+           if (err2) alert('Error saving gift: ' + err2.message);
+           else {
+             setShowGiftModal(false); setGiftName(''); setGiftPrice(''); setGiftQuantity(''); setEditingGiftId(null); loadTransactions();
+           }
+        } else alert('Error saving gift: ' + error.message);
+      } else {
+         setShowGiftModal(false); setGiftName(''); setGiftPrice(''); setGiftQuantity(''); setEditingGiftId(null); loadTransactions();
+      }
+    }
+  };
+
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
@@ -302,6 +388,22 @@ const AccountantDashboard = () => {
        alert("Error saving transaction: " + error.message);
     } else {
        // Handle pending advance deletion
+       
+    // After transaction upsert, handle Gift if selected
+    if (selectedGiftId) {
+       await supabase.from('gift_transactions').insert({
+          gift_id: selectedGiftId,
+          type: 'OUT',
+          quantity: 1,
+          related_sale_id: txData.id,
+          date: formDate
+       });
+       const gift = gifts.find(g => g.id === selectedGiftId);
+       if (gift) {
+         await supabase.from('gifts').update({ total_out: gift.total_out + 1 }).eq('id', selectedGiftId);
+       }
+    }
+
        const pendingAdvId = (window as any)._pendingAdvanceId;
        if (pendingAdvId) {
           await supabase.from('transactions').delete().eq('id', pendingAdvId);
@@ -435,6 +537,7 @@ const AccountantDashboard = () => {
     setFormReceiverName('');
     setFormRemark('');
     setFormGift('');
+    setSelectedGiftId('');
     setFormItems([{ productName: '', imeiNo: '', purchasePrice: '', sellingPrice: '' }]);
     setFormPayments([]);
     setPayAmount('');
@@ -478,6 +581,174 @@ const AccountantDashboard = () => {
     
     setFormPayments([...tx.paymentRecords]);
     setIsModalOpen(true);
+  };
+
+  
+  const exportExcel = () => {
+    let filteredTx = [...transactions];
+    let reportTitleStr = reportType === 'AllDetails' ? "All Details Report" : 
+                         reportType === 'CashReport' ? "Cash Tracker Report" : 
+                         reportType === 'ItemsReport' ? "Inventory Items Report" : "Basic Sale & Purchase Report";
+
+    if (reportFilter === 'Today') {
+      const today = new Date().toISOString().split('T')[0];
+      filteredTx = transactions.filter(t => t.date === today);
+      reportTitleStr += ` - ${today}`;
+    } else if (reportFilter === 'Yesterday') {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yStr = yesterday.toISOString().split('T')[0];
+      filteredTx = transactions.filter(t => t.date === yStr);
+      reportTitleStr += ` - ${yStr}`;
+    } else if (reportFilter === 'SpecificDate') {
+      filteredTx = transactions.filter(t => t.date === reportSpecificDate);
+      reportTitleStr += ` - ${reportSpecificDate}`;
+    } else if (reportFilter === 'Month') {
+      filteredTx = transactions.filter(t => t.date.startsWith(reportMonth));
+      reportTitleStr += ` - ${reportMonth}`;
+    }
+
+    const wb = XLSX.utils.book_new();
+
+    if (reportType === 'AllDetails') {
+       // Summary Sheet
+       const summaryData = [
+         { Metric: 'Total Active Products', Value: parsedData.details.filteredStockCount },
+         { Metric: 'Total Stock Value', Value: parsedData.details.filteredStockValuation },
+         { Metric: 'Opening Balance', Value: parsedData.details.openingBalance },
+         { Metric: 'Closing Balance', Value: parsedData.details.closingBalance },
+         { Metric: 'Total Income (Cash In)', Value: parsedData.details.filteredCashIn },
+         { Metric: 'Total Expense (Cash Out)', Value: parsedData.details.filteredCashOut },
+         { Metric: 'Total Generated Profit', Value: parsedData.details.totalProfit },
+         { Metric: 'Total Loss', Value: parsedData.details.totalLoss },
+         { Metric: 'Total Items Purchased', Value: parsedData.details.filteredPurchasesCount },
+         { Metric: 'Total Items Sold', Value: parsedData.details.filteredSalesCount },
+       ];
+       const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+       XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+       // Advances Sheet
+       const advTx = filteredTx.filter(t => t.type === 'Advance');
+       const advData = advTx.map(tx => ({
+           Date: tx.date,
+           CustomerInfo: `${tx.partyName || ''} - ${tx.remark || ''}`,
+           Items: getTxItems(tx).map(it => `${it.productName} (IMEI: ${it.imeiNo})`).join(', '),
+           AdvanceAmount: getTxTotalSelling(tx),
+           Payments: tx.paymentRecords.map(p => `${p.mode}: ${p.amount}`).join(', ')
+       }));
+       if (advData.length > 0) {
+           const wsAdv = XLSX.utils.json_to_sheet(advData);
+           XLSX.utils.book_append_sheet(wb, wsAdv, "Advances Ledger");
+       }
+    } else if (reportType === 'SalesPurchases') {
+       const salesTx = filteredTx.filter(t => t.type === 'Sale');
+       const purchaseTx = filteredTx.filter(t => t.type === 'Purchase');
+
+       const salesData = salesTx.map((tx, idx) => {
+           const purPriceTotal = getTxTotalPurchase(tx);
+           const sellPriceTotal = getTxTotalSelling(tx);
+           const diff = sellPriceTotal - purPriceTotal;
+           return {
+               No: idx + 1,
+               Date: tx.date,
+               Customer: tx.partyName,
+               Items: getTxItems(tx).map(it => `${it.productName} (${it.imeiNo})`).join(', '),
+               Gift: tx.gift || '',
+               Remark: tx.remark || '',
+               PurchasePrice: purPriceTotal,
+               SellingPrice: sellPriceTotal,
+               Profit: diff > 0 ? diff : 0,
+               Loss: diff < 0 ? Math.abs(diff) : 0,
+               Payments: tx.paymentRecords.map(p => `${p.mode}: ${p.amount}`).join(', '),
+               Status: tx.paymentStatus
+           };
+       });
+       if (salesData.length > 0) {
+           const wsSales = XLSX.utils.json_to_sheet(salesData);
+           XLSX.utils.book_append_sheet(wb, wsSales, "Sales Ledger");
+       }
+
+       const purchaseData = purchaseTx.map((tx, idx) => ({
+           No: idx + 1,
+           Date: tx.date,
+           Vendor: tx.partyName,
+           Items: getTxItems(tx).map(it => `${it.productName} (${it.imeiNo})`).join(', '),
+           Remark: tx.remark || '',
+           PurchasePrice: getTxTotalPurchase(tx),
+           Payments: tx.paymentRecords.map(p => `${p.mode}: ${p.amount}`).join(', '),
+           Status: tx.paymentStatus
+       }));
+       if (purchaseData.length > 0) {
+           const wsPur = XLSX.utils.json_to_sheet(purchaseData);
+           XLSX.utils.book_append_sheet(wb, wsPur, "Purchases Ledger");
+       }
+    } else if (reportType === 'CashReport') {
+       const cRows: any[] = [];
+       filteredTx.forEach(tx => {
+           let inAmt = 0, outAmt = 0;
+           let desc = tx.partyName || '-';
+           if (tx.type === 'Cash In') {
+               const parts = desc.split('|||');
+               inAmt = tx.paymentRecords[0]?.amount || 0;
+               desc = `Cash Given By: ${parts[0] || '-'} | Recv: ${parts[1] || '-'}`;
+           } else if (tx.type === 'Cash Out') {
+               const parts = desc.split('|||');
+               outAmt = tx.paymentRecords[0]?.amount || 0;
+               desc = `Cash Sent To: ${parts[1] || '-'} | Giver: ${parts[0] || '-'}`;
+           } else {
+               const cashP = tx.paymentRecords.find(p => p.mode === 'Cash')?.amount || 0;
+               if (cashP > 0) {
+                   desc = tx.partyName || '-';
+                   if (tx.type === 'Sale' || tx.type === 'Advance') { inAmt = cashP; desc = `${tx.type} from: ${desc}`; }
+                   if (tx.type === 'Purchase') { outAmt = cashP; desc = `${tx.type} to: ${desc}`; }
+               }
+           }
+           if (inAmt > 0 || outAmt > 0 || tx.type === 'Cash In' || tx.type === 'Cash Out') {
+               cRows.push({
+                   Date: tx.date,
+                   Type: tx.type === 'Sale' || tx.type === 'Purchase' || tx.type === 'Advance' ? `${tx.type} (Cash Auth)` : tx.type,
+                   Description: desc,
+                   CashIn: inAmt,
+                   CashOut: outAmt
+               });
+           }
+       });
+       if (cRows.length > 0) {
+           const wsCash = XLSX.utils.json_to_sheet(cRows);
+           XLSX.utils.book_append_sheet(wb, wsCash, "Cash Ledger");
+       }
+    } else if (reportType === 'ItemsReport') {
+       const activeData = parsedData.activeProducts.map(p => ({
+           Date: p.date,
+           ProductName: p.productName,
+           IMEI: p.imeiNo,
+           PurchasePrice: p.purchasePrice
+       }));
+       if (activeData.length > 0) {
+           const wsActive = XLSX.utils.json_to_sheet(activeData);
+           XLSX.utils.book_append_sheet(wb, wsActive, "Active Inventory");
+       }
+
+       const inactiveData = parsedData.inactiveProducts.map(p => ({
+           Date: p.date,
+           ProductName: p.productName,
+           IMEI: p.imeiNo,
+           PurchasePrice: p.purchasePrice,
+           SellingPrice: p.sellPrice || 0,
+           Status: 'Sold/Inactive'
+       }));
+       if (inactiveData.length > 0) {
+           const wsInactive = XLSX.utils.json_to_sheet(inactiveData);
+           XLSX.utils.book_append_sheet(wb, wsInactive, "Inactive Inventory");
+       }
+    }
+
+    if (wb.SheetNames.length === 0) {
+        // If no sheets were added, add an empty sheet to prevent errors
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ Message: "No data found for this report filter." }]), "Empty");
+    }
+
+    XLSX.writeFile(wb, `${reportTitleStr.replace(/[^a-zA-Z0-9_-]/g, '_')}.xlsx`);
   };
 
   const exportPDF = async () => {
@@ -1350,6 +1621,17 @@ const AccountantDashboard = () => {
                    <div>
                       <label className="block text-xs font-semibold mb-1 text-pink-500">🎁 Gift Included (Optional)</label>
                       <input type="text" value={formGift} onChange={e => setFormGift(e.target.value)} placeholder="E.g. Earphones, Back Case..." className="w-full bg-pink-50 dark:bg-pink-900/10 border border-pink-200 dark:border-pink-800 rounded-lg px-4 py-2 outline-none focus:border-pink-500" />
+
+                      <div className="mt-3">
+                         <label className="block text-xs font-semibold mb-1 text-pink-500">Or Select from Inventory</label>
+                         <select value={selectedGiftId} onChange={e => setSelectedGiftId(e.target.value)} className="w-full px-4 py-2 bg-white dark:bg-[#1e293b] border border-pink-200 dark:border-pink-800 rounded-lg outline-none focus:border-pink-500 cursor-pointer text-sm">
+                            <option value="">-- No Inventory Gift --</option>
+                            {gifts.filter(g => g.total_in - g.total_out > 0).map(g => (
+                              <option key={g.id} value={g.id}>{g.name} (Remaining: {g.total_in - g.total_out})</option>
+                            ))}
+                         </select>
+                      </div>
+
                    </div>
                  )}
                </div>
@@ -1403,7 +1685,7 @@ const AccountantDashboard = () => {
         </div>
 
         <nav className="flex-1 px-4 space-y-1 mt-2">
-          {['Dashboard', 'Sales', 'Purchases', 'Advances', 'Pending', 'Cash Tracker', 'Inventory', 'All Details'].map((item) => (
+          {['Dashboard', 'Sales', 'Purchases', 'Advances', 'Pending', 'Cash Tracker', 'Inventory', 'Gifts', 'All Details'].map((item) => (
             <button
               key={item}
               onClick={() => { setActiveTab(item); setShowMobileMenu(false); }}
@@ -1426,6 +1708,62 @@ const AccountantDashboard = () => {
           </div>
         </nav>
       </aside>
+
+      
+      {/* Gift Modal */}
+      {showGiftModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#1e293b] rounded-2xl w-full max-w-sm shadow-2xl border border-slate-200 dark:border-slate-700">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+              <h3 className="text-lg font-bold">{editingGiftId ? 'Edit Gift' : 'Add New Gift'}</h3>
+              <button onClick={() => setShowGiftModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+            <form onSubmit={handleAddGift} className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Gift Name *</label>
+                <input required type="text" value={giftName} onChange={e => setGiftName(e.target.value)} className="w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-900" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Price (Optional)</label>
+                <input type="number" value={giftPrice} onChange={e => setGiftPrice(e.target.value)} className="w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-900" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Initial Quantity *</label>
+                <input required type="number" value={giftQuantity} onChange={e => setGiftQuantity(e.target.value)} className="w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-900" />
+              </div>
+              <button type="submit" className="w-full py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700">Save Gift</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      
+      {/* Gift Modal */}
+      {showGiftModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#1e293b] rounded-2xl w-full max-w-sm shadow-2xl border border-slate-200 dark:border-slate-700 animate-in zoom-in-95 duration-200">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+              <h3 className="text-lg font-bold">{editingGiftId ? 'Edit Gift' : 'Add New Gift'}</h3>
+              <button onClick={() => { setShowGiftModal(false); setEditingGiftId(null); }} className="text-slate-400 hover:text-slate-600 cursor-pointer">✕</button>
+            </div>
+            <form onSubmit={handleAddGift} className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Gift Name *</label>
+                <input required type="text" value={giftName} onChange={e => setGiftName(e.target.value)} placeholder="e.g. Earphones" className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/50 outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Price (Optional)</label>
+                <input type="number" value={giftPrice} onChange={e => setGiftPrice(e.target.value)} placeholder="0.00" className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/50 outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Initial Quantity *</label>
+                <input required type="number" value={giftQuantity} onChange={e => setGiftQuantity(e.target.value)} placeholder="e.g. 50" className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/50 outline-none focus:border-indigo-500" />
+              </div>
+              <button type="submit" className="w-full py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-500/20 cursor-pointer">{editingGiftId ? 'Update Gift' : 'Save Gift'}</button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Report Modal */}
       {reportModalOpen && (
@@ -1475,9 +1813,14 @@ const AccountantDashboard = () => {
                  </div>
                )}
 
-               <button onClick={exportPDF} className="w-full py-3 bg-slate-900 dark:bg-indigo-600 hover:opacity-90 text-white rounded-xl font-bold transition shadow-lg mt-4 cursor-pointer">
-                 Download PDF Report
-               </button>
+               <div className="flex gap-2 mt-4">
+                 <button onClick={exportPDF} className="flex-1 py-3 bg-slate-900 dark:bg-indigo-600 hover:opacity-90 text-white rounded-xl font-bold transition shadow-lg cursor-pointer flex items-center justify-center gap-2">
+                   📄 PDF
+                 </button>
+                 <button onClick={exportExcel} className="flex-1 py-3 bg-emerald-600 hover:opacity-90 text-white rounded-xl font-bold transition shadow-lg cursor-pointer flex items-center justify-center gap-2">
+                   📊 Excel
+                 </button>
+               </div>
             </div>
           </div>
         </div>
@@ -2144,6 +2487,52 @@ const AccountantDashboard = () => {
           </div>
         </div>
       )}
+
+        
+        {activeTab === 'Gifts' && (
+         <div className="space-y-6 flex-1 animate-in fade-in duration-300">
+           <div className="flex justify-between items-center mb-6">
+             <h2 className="text-xl font-bold text-slate-800 dark:text-white">Gift Inventory</h2>
+             <button onClick={() => { setEditingGiftId(null); setGiftName(''); setGiftPrice(''); setGiftQuantity(''); setShowGiftModal(true); }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-500/20 transition-all cursor-pointer">
+               + Add Gift
+             </button>
+           </div>
+           
+           <div className="bg-white dark:bg-[#1e293b] rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-slate-800 overflow-x-auto">
+             <table className="w-full text-left border-collapse min-w-[600px]">
+               <thead>
+                 <tr className="text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800">
+                   <th className="py-3 px-4 font-medium uppercase tracking-wider text-xs">Gift Name</th>
+                   <th className="py-3 px-4 font-medium uppercase tracking-wider text-xs">Price</th>
+                   <th className="py-3 px-4 font-medium uppercase tracking-wider text-xs text-center">Initial Stock</th>
+                   <th className="py-3 px-4 font-medium uppercase tracking-wider text-xs text-center">Given Away</th>
+                   <th className="py-3 px-4 font-medium uppercase tracking-wider text-xs text-center">Remaining</th>
+                   <th className="py-3 px-4 font-medium uppercase tracking-wider text-xs text-center">Actions</th>
+                 </tr>
+               </thead>
+               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                 {gifts.map(g => {
+                   const remaining = g.total_in - g.total_out;
+                   return (
+                     <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                       <td className="py-4 px-4 font-bold text-slate-800 dark:text-slate-200">{g.name}</td>
+                       <td className="py-4 px-4 text-slate-600 dark:text-slate-400 font-mono">{g.price ? `Rs. ${g.price}` : '-'}</td>
+                       <td className="py-4 px-4 text-center text-slate-600 dark:text-slate-400 font-bold">{g.total_in}</td>
+                       <td className="py-4 px-4 text-center text-rose-500 font-bold">{g.total_out}</td>
+                       <td className="py-4 px-4 text-center font-bold text-emerald-600">{remaining}</td>
+                       <td className="py-4 px-4 text-center">
+                         <button onClick={() => openEditGift(g)} className="text-indigo-500 hover:text-indigo-700 px-2 cursor-pointer transition-colors" title="Edit">✎</button>
+                         <button onClick={() => handleDeleteGift(g.id)} className="text-rose-500 hover:text-rose-700 px-2 cursor-pointer transition-colors" title="Delete">✕</button>
+                       </td>
+                     </tr>
+                   );
+                 })}
+                 {gifts.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-500 font-medium">No gifts found. Add one!</td></tr>}
+               </tbody>
+             </table>
+           </div>
+         </div>
+        )}
 
         {activeTab === 'Inventory' && (
           <div className="flex flex-col gap-6 animate-in fade-in duration-300 flex-1">
